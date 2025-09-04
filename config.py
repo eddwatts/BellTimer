@@ -16,6 +16,15 @@ OTA_REPO_URL = "https://github.com/eddwatts/BellTimer"
 # List of all files that should be updated from the repository.
 OTA_UPDATE_FILES = ["main.py", "config.py", "xpt2046.py", "st7789.py", "romand.py", "ota_updater.py"]
 
+# --- SD Card & Logging Configuration ---
+# Pins for the built-in SD card reader on the CYD
+SD_SCLK_PIN = 40
+SD_MOSI_PIN = 41
+SD_MISO_PIN = 38
+SD_CS_PIN = 39
+LOG_FILE = "/sd/event_log.txt"
+LOG_FILE_MAX_SIZE_KB = 512 # Rotate log file after it reaches this size
+
 # --- Timezone Configuration ---
 TIMEZONE = "Europe/London"
 
@@ -47,4 +56,5 @@ PIXEL_SHIFT_INTERVAL_S = 60 # Shift pixel every 60 seconds
 
 # --- Display Colors ---
 BLACK, BLUE, RED, GREEN, CYAN, MAGENTA, YELLOW, WHITE, ORANGE = 0x0000, 0x001F, 0xF800, 0x07E0, 0x07FF, 0xF81F, 0xFFE0, 0xFFFF, 0xFD20
+
 
