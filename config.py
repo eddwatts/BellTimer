@@ -10,6 +10,11 @@ WIFI_PASSWORD = "backuppassword"
 SCHEDULE_MANIFEST_URL = "https://example.com/schedule_manifest.php"
 NTP_HOST = "0.uk.pool.ntp.org"
 
+# --- Security Configuration ---
+# X-API-Key: your_long_random_api_key_here
+WEB_INTERFACE_PASSWORD = "your_password_here"  # Change this!
+API_KEY = "your_long_random_api_key_here"      # Change this!
+
 # --- OTA (Over-the-Air) Update Configuration ---
 # IMPORTANT: Change this URL to your own public GitHub repository.
 OTA_REPO_URL = "https://github.com/eddwatts/BellTimer"
