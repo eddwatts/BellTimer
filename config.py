@@ -17,7 +17,8 @@ OTA_REPO_URL = "https://github.com/eddwatts/BellTimer"
 OTA_UPDATE_FILES = ["main.py", "config.py", "xpt2046.py", "st7789.py", "romand.py", "ota_updater.py"]
 
 # --- SD Card & Logging Configuration ---
-# Pins for the built-in SD card reader on the CYD
+# Pins for the built-in SD card reader on the CYD. This typically uses SPI bus 2 (HSPI).
+SD_SPI_BUS = 2
 SD_SCLK_PIN = 40
 SD_MOSI_PIN = 41
 SD_MISO_PIN = 38
@@ -33,26 +34,32 @@ RELAY_1_PIN = 26
 RELAY_2_PIN = 27
 RELAY_ON_DURATION = 1
 
+# --- RGB LED Configuration (Active Low) ---
+# Pins for the three separate RGB LED GPIOs.
+RGB_LED_R_PIN = 4
+RGB_LED_G_PIN = 16
+RGB_LED_B_PIN = 17
+# Status Colors (R, G, B) - Non-zero values mean ON.
+COLOR_NORMAL = (0, 10, 0)      # Green
+COLOR_HOLIDAY = (0, 0, 10)     # Blue
+COLOR_SYNCING = (20, 10, 0)    # Yellow
+COLOR_WIFI_CONNECTING = (10, 0, 10) # Magenta
+COLOR_WIFI_FAILED = (20, 0, 0) # Red
+COLOR_AP_MODE = (10, 10, 10)   # White
+
 # --- Display & SPI Configuration ---
-# Common pins for ESP32-Cheap-Yellow-Display
-SPI_BUS = 1
-SPI_BAUDRATE = 24000000
-SPI_SCLK_PIN = 14
-SPI_MOSI_PIN = 13
-RESET_PIN = 12
-CS_PIN = 15  # Chip select for the display
-DC_PIN = 2   # Data/Command for the display
-BACKLIGHT_PIN = 21
-DISPLAY_WIDTH = 240
-DISPLAY_HEIGHT = 240
+# The display uses SPI bus 1 (VSPI).
+DISPLAY_SPI_BUS, DISPLAY_SPI_BAUDRATE = 1, 24000000
+DISPLAY_SCLK_PIN, DISPLAY_MOSI_PIN = 14, 13
+DISPLAY_RESET_PIN, DISPLAY_CS_PIN, DISPLAY_DC_PIN, DISPLAY_BACKLIGHT_PIN = 12, 15, 2, 21
+DISPLAY_WIDTH, DISPLAY_HEIGHT = 240, 240
 
 # --- Touchscreen Configuration ---
-# Pin for the XPT2046 touch controller chip select
 TOUCH_CS_PIN = 32
 
 # --- Screen Burn-in Prevention ---
-SCREEN_OFF_TIMEOUT = 300  # 5 minutes
-PIXEL_SHIFT_INTERVAL_S = 60 # Shift pixel every 60 seconds
+SCREEN_OFF_TIMEOUT = 300
+PIXEL_SHIFT_INTERVAL_S = 60
 
 # --- Display Colors ---
 BLACK, BLUE, RED, GREEN, CYAN, MAGENTA, YELLOW, WHITE, ORANGE = 0x0000, 0x001F, 0xF800, 0x07E0, 0x07FF, 0xF81F, 0xFFE0, 0xFFFF, 0xFD20
