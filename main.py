@@ -1,5 +1,5 @@
 # main.py (Ported for ESP32-CYD)
-# Features: Color Display, DST, Watchdog, Web UI, Schedule Cache, Diagnostics, Touchscreen, AP Setup, Multiple Schedules, OTA Updates
+# Features: Color Display, DST, Watchdog, Web UI, Schedule Cache, Diagnostics, Touchscreen, AP Setup, Multiple Schedules, OTA Updates, SD Card Logging
 
 import network
 import urequests
@@ -10,12 +10,13 @@ import ujson
 import ssl
 import gc
 import sys
+import os
 import esp32
-from machine import Pin, SPI, WDT, PWM, reset
+from machine import Pin, SPI, WDT, PWM, SDCard, reset
 import st7789
 import romand as font
 import xpt2046
-import ota_updater # Import the new OTA library
+import ota_updater 
 import config
 
 # --- Global Variables ---
@@ -29,6 +30,7 @@ last_status_line, last_status_color = "Booting...", config.YELLOW
 wifi_connection_failed = False
 wifi_creds = {'ssid': config.WIFI_SSID, 'password': config.WIFI_PASSWORD}
 active_schedule_name = "Default"
+sd_card_present = False
 
 # Diagnostic & Touch Globals
 start_time, last_sync_time_str, wifi_rssi = utime.ticks_ms(), "Never", 0
@@ -41,54 +43,92 @@ pixel_shift_x, pixel_shift_y, pixel_shift_direction, last_pixel_shift_time = 0, 
 DAYS_OF_WEEK = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 HOLIDAY_STATUS_FILE, SCHEDULE_CACHE_FILE, WIFI_CONFIG_FILE, ACTIVE_SCHEDULE_FILE = "holiday.dat", "schedule.json", "wifi.json", "active_schedule.txt"
 
+# --- SD Card and Logging ---
+def init_sd_card():
+    global sd_card_present
+    try:
+        sd_spi = SPI(config.SD_SPI_BUS, sck=Pin(config.SD_SCLK_PIN), mosi=Pin(config.SD_MOSI_PIN), miso=Pin(config.SD_MISO_PIN))
+        sd = SDCard(sd_spi, Pin(config.SD_CS_PIN))
+        os.mount(sd, '/sd')
+        sd_card_present = True
+        print("SD card mounted successfully.")
+        log_event("System boot: SD card detected and mounted.")
+    except OSError:
+        sd_card_present = False
+        print("No SD card found or failed to mount.")
+    except Exception as e:
+        sd_card_present = False
+        print(f"An unexpected error occurred with SD card: {e}")
+
+def log_event(message):
+    if not sd_card_present:
+        return
+    
+    try:
+        try:
+            file_size = os.stat(config.LOG_FILE)[6]
+            if file_size > (config.LOG_FILE_MAX_SIZE_KB * 1024):
+                os.rename(config.LOG_FILE, config.LOG_FILE + '.bak')
+                print("Log file rotated.")
+        except OSError:
+            pass # File doesn't exist yet
+
+        with open(config.LOG_FILE, 'a') as f:
+            now = get_local_time()
+            timestamp = f"{now[0]:04d}-{now[1]:02d}-{now[2]:02d} {now[3]:02d}:{now[4]:02d}:{now[5]:02d}"
+            f.write(f"{timestamp} - {message}\n")
+    except Exception as e:
+        print(f"Failed to write to log file: {e}")
+
 # --- Wi-Fi & Schedule Config Management ---
 def load_wifi_credentials():
     global wifi_creds
     try:
         with open(WIFI_CONFIG_FILE, 'r') as f: wifi_creds = ujson.load(f)
-        print(f"Loaded WiFi credentials for '{wifi_creds['ssid']}'")
-    except (OSError, ValueError): print("Using fallback WiFi credentials")
+        log_event(f"Loaded WiFi credentials for '{wifi_creds['ssid']}'")
+    except (OSError, ValueError): log_event("Using fallback WiFi credentials")
 
 def save_wifi_credentials(ssid, password):
     try:
         with open(WIFI_CONFIG_FILE, 'w') as f: ujson.dump({'ssid': ssid, 'password': password}, f)
-        print("Saved new WiFi credentials.")
-    except Exception as e: print(f"Error saving WiFi credentials: {e}")
+        log_event(f"Saved new WiFi credentials for SSID: {ssid}")
+    except Exception as e: log_event(f"Error saving WiFi credentials: {e}")
 
 def load_active_schedule_name():
     global active_schedule_name
     try:
         with open(ACTIVE_SCHEDULE_FILE, 'r') as f: active_schedule_name = f.read().strip()
-        print(f"Loaded active schedule: {active_schedule_name}")
+        log_event(f"Loaded active schedule name: {active_schedule_name}")
     except OSError:
-        print("No active schedule file found, will use first in manifest.")
+        log_event("No active schedule file found.")
 
 def save_active_schedule_name(name):
     global active_schedule_name; active_schedule_name = name
     try:
         with open(ACTIVE_SCHEDULE_FILE, 'w') as f: f.write(name)
-        print(f"Set active schedule to: {name}")
-    except Exception as e: print(f"Error saving active schedule: {e}")
+        log_event(f"Set active schedule to: {name}")
+    except Exception as e: log_event(f"Error saving active schedule: {e}")
 
 # --- Schedule & Holiday Functions ---
 def save_schedule_to_cache(data):
     try:
         with open(SCHEDULE_CACHE_FILE, "w") as f: ujson.dump(data, f)
-        print("Schedule saved to cache.")
-    except Exception as e: print(f"Error saving schedule to cache: {e}")
+        log_event("Schedule saved to local cache.")
+    except Exception as e: log_event(f"Error saving schedule to cache: {e}")
 
 def load_schedule_from_cache():
     global schedule
     try:
         with open(SCHEDULE_CACHE_FILE, "r") as f: schedule = ujson.load(f)
-        print("Loaded schedule from cache."); find_next_bell()
-    except (OSError, ValueError): print("Could not load schedule from cache."); schedule = {}
+        log_event("Loaded schedule from local cache."); find_next_bell()
+    except (OSError, ValueError): log_event("Could not load schedule from cache."); schedule = {}
 
 def save_holiday_status(status):
     global holiday_mode; holiday_mode = status
     try:
         with open(HOLIDAY_STATUS_FILE, "w") as f: f.write("1" if status else "0")
-    except Exception as e: print(f"Error saving holiday status: {e}")
+        log_event(f"Holiday mode set to {'ON' if status else 'OFF'}")
+    except Exception as e: log_event(f"Error saving holiday status: {e}")
 
 def load_holiday_status():
     global holiday_mode
@@ -96,7 +136,7 @@ def load_holiday_status():
         with open(HOLIDAY_STATUS_FILE, "r") as f: holiday_mode = f.read().strip() == "1"
     except Exception: save_holiday_status(False)
 
-# --- Time & DST Functions (Unchanged) ---
+# --- Time & DST Functions ---
 def is_bst(dt):
     year, month, day, hour, _, _, _, _ = dt
     if month < 3 or month > 10: return False
@@ -116,14 +156,14 @@ def get_local_time():
 def init_display():
     global display, backlight, touch
     try:
-        spi = SPI(config.SPI_BUS, baudrate=config.SPI_BAUDRATE, sck=Pin(config.SPI_SCLK_PIN), mosi=Pin(config.SPI_MOSI_PIN))
-        display = st7789.ST7789(spi, config.DISPLAY_WIDTH, config.DISPLAY_HEIGHT, reset=Pin(config.RESET_PIN, Pin.OUT), cs=Pin(config.CS_PIN, Pin.OUT), dc=Pin(config.DC_PIN, Pin.OUT))
+        spi = SPI(config.DISPLAY_SPI_BUS, baudrate=config.DISPLAY_SPI_BAUDRATE, sck=Pin(config.DISPLAY_SCLK_PIN), mosi=Pin(config.DISPLAY_MOSI_PIN))
+        display = st7789.ST7789(spi, config.DISPLAY_WIDTH, config.DISPLAY_HEIGHT, reset=Pin(config.DISPLAY_RESET_PIN), cs=Pin(config.DISPLAY_CS_PIN), dc=Pin(config.DISPLAY_DC_PIN))
         display.init()
         touch = xpt2046.Touch(spi, cs=Pin(config.TOUCH_CS_PIN))
-        if config.BACKLIGHT_PIN != -1:
-             backlight = PWM(Pin(config.BACKLIGHT_PIN)); backlight.freq(1000); backlight.duty_u16(65535)
-        display.fill(config.BLACK); print("Hardware initialized."); wake_display()
-    except Exception as e: print(f"Error initializing hardware: {e}"); display = None
+        if config.DISPLAY_BACKLIGHT_PIN != -1:
+             backlight = PWM(Pin(config.DISPLAY_BACKLIGHT_PIN)); backlight.freq(1000); backlight.duty_u16(65535)
+        display.fill(config.BLACK); print("Display hardware initialized."); wake_display()
+    except Exception as e: print(f"Error initializing display hardware: {e}"); display = None
 
 def wake_display():
     global display_on, last_activity_time
@@ -207,9 +247,11 @@ def connect_wifi(wdt):
             if wlan.status() >= 3: break
             max_wait -= 1; utime.sleep(1)
     if wlan.status() != 3:
+        log_event("WiFi connection failed.")
         ip_address="Failed";wifi_connection_failed=True;update_display("WiFi Connect Fail",config.RED);return False
     else:
-        ip_address=wlan.ifconfig()[0];wifi_connection_failed=False;update_display("WiFi Connected",config.GREEN);print(f"WiFi OK: {ip_address}");return True
+        ip_address=wlan.ifconfig()[0];wifi_connection_failed=False;update_display("WiFi Connected",config.GREEN)
+        log_event(f"WiFi connected. IP: {ip_address}");return True
 
 def sync_time(wdt):
     global last_sync_time_str; update_display("Syncing time...", config.YELLOW)
@@ -218,8 +260,10 @@ def sync_time(wdt):
         try:
             ntptime.host=config.NTP_HOST; ntptime.settime()
             now=get_local_time(); last_sync_time_str=f"{now[3]:02d}:{now[4]:02d}"
+            log_event("NTP time synchronized successfully.")
             update_display("Time Synced OK",config.GREEN); return True
         except Exception: utime.sleep(3)
+    log_event("NTP time synchronization failed after 3 attempts.")
     update_display("NTP Sync Fail",config.RED); return False
 
 def https_get_json(url):
@@ -230,7 +274,9 @@ def https_get_json(url):
             if not chunk:break
             response+=chunk
         s.close();return ujson.loads(response[response.find(b'\r\n\r\n')+4:])
-    except Exception: return None
+    except Exception as e:
+        log_event(f"Error during HTTPS GET from {url}: {e}")
+        return None
 
 def fetch_manifest_and_schedule(wdt):
     global schedule, schedule_manifest, active_schedule_name
@@ -238,8 +284,10 @@ def fetch_manifest_and_schedule(wdt):
     
     new_manifest = https_get_json(config.SCHEDULE_MANIFEST_URL)
     if not new_manifest or "schedules" not in new_manifest or "base_url" not in new_manifest:
+        log_event("Failed to fetch or parse a valid schedule manifest.")
         update_display("Manifest Invalid", config.ORANGE); return False
     schedule_manifest = new_manifest
+    log_event("Successfully fetched schedule manifest.")
     
     if active_schedule_name not in schedule_manifest["schedules"]:
         active_schedule_name = next(iter(schedule_manifest["schedules"]))
@@ -251,45 +299,65 @@ def fetch_manifest_and_schedule(wdt):
     
     new_schedule = https_get_json(schedule_url)
     if new_schedule:
+        log_event(f"Successfully downloaded schedule: {active_schedule_name}")
         schedule = new_schedule; save_schedule_to_cache(schedule); find_next_bell()
         update_display("Schedule OK", config.GREEN); return True
     else:
+        log_event(f"Failed to download schedule: {active_schedule_name}")
         update_display("Schedule DL Fail", config.ORANGE); return False
 
 def activate_relay(relay_number, duration):
+    log_event(f"Relay {relay_number} activated for {duration}s.")
     target=relay1 if relay_number==1 else relay2;relay_status[str(relay_number)]='ON';update_display(f"Relay {relay_number} ON",config.ORANGE);target.value(1);utime.sleep(duration);target.value(0);relay_status[str(relay_number)]='OFF'
 
 # --- OTA Update Function ---
 def perform_ota_update(cl, wdt):
-    cl.send("HTTP/1.0 200 OK\r\nContent-type: text/html\r\nConnection: close\r\n\r\n")
-    cl.send("<html><body><h1>Starting OTA Update...</h1><p>Check the device screen for progress. The device will reboot if successful.</p></body></html>")
+    log_event("OTA update process started via web UI.")
+    cl.send("HTTP/1.0 200 OK\r\n\r\n<html><body><h1>Starting OTA Update...</h1><p>Check screen for progress. Device will reboot if successful.</p></body></html>")
     cl.close()
     
-    display.fill(config.BLACK)
-    st7789.write(display, font, "Starting OTA Update...", 10, 120, config.YELLOW, config.BLACK)
+    display.fill(config.BLACK); st7789.write(display, font, "Starting OTA Update...", 10, 120, config.YELLOW, config.BLACK)
     
     updater = ota_updater.OTAUpdater(config.OTA_REPO_URL, config.OTA_UPDATE_FILES)
     if updater.check_for_updates():
+        log_event("New updates found on remote repository.")
         st7789.write(display, font, "Downloading...", 10, 140, config.WHITE, config.BLACK)
         if updater.download_and_install_updates():
-            st7789.write(display, font, "Update successful!", 10, 160, config.GREEN, config.BLACK)
-            st7789.write(display, font, "Rebooting...", 10, 180, config.WHITE, config.BLACK)
+            log_event("OTA update successful. Rebooting.")
+            st7789.write(display, font, "Update successful! Rebooting...", 10, 160, config.GREEN, config.BLACK)
             utime.sleep(3); reset()
         else:
+            log_event("OTA update download/install failed.")
             st7789.write(display, font, "Update failed!", 10, 160, config.RED, config.BLACK)
             utime.sleep(5)
     else:
+        log_event("No new OTA updates available.")
         st7789.write(display, font, "No updates available.", 10, 140, config.GREEN, config.BLACK)
         utime.sleep(3)
     
     update_display(last_status_line, last_status_color)
 
 # --- Web Server ---
+def send_log_page(cl):
+    cl.send("HTTP/1.0 200 OK\r\n\r\n<!DOCTYPE html><html><head><title>Event Log</title><meta name='viewport' content='width=device-width, initial-scale=1.0'><style>body{font-family:monospace;background-color:#333;color:#fff;margin:15px;} a{color:cyan;}</style></head><body><h1>Event Log</h1>")
+    if not sd_card_present:
+        cl.send("<p>No SD card detected. Logging is disabled.</p>")
+    else:
+        try:
+            cl.send("<pre>")
+            with open(config.LOG_FILE, 'r') as f:
+                for line in f:
+                    cl.send(line.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;'))
+            cl.send("</pre>")
+        except OSError:
+            cl.send("<p>Log file is empty or not yet created.</p>")
+    cl.send("<p><a href='/'>&laquo; Back to Main Page</a></p></body></html>")
+
 def send_status_page(cl):
     now=get_local_time();time_str=f"{now[0]:04d}-{now[1]:02d}-{now[2]:02d} {now[3]:02d}:{now[4]:02d}:{now[5]:02d}"
     next_bell_str = "DISABLED" if holiday_mode else (f"{next_bell_event.get('day_name','')} at {next_bell_event.get('time','')} - {next_bell_event.get('bellname','No Name')}" if next_bell_event else "None")
     
-    cl.send("HTTP/1.0 200 OK\r\nContent-type: text/html\r\n\r\n<!DOCTYPE html><html><head><title>Bell Controller</title><meta name='viewport' content='width=device-width, initial-scale=1.0'><style>body{font-family:sans-serif;background-color:#333;color:#fff;margin:15px;} button,input,select{padding:10px;margin:5px;border-radius:5px;border:none;cursor:pointer;} table{width:100%;border-collapse:collapse;} th,td{padding:8px;border:1px solid #555;text-align:left;}</style></head><body>")
+    cl.send("HTTP/1.0 200 OK\r\n\r\n<!DOCTYPE html><html><head><title>Bell Controller</title><meta name='viewport' content='width=device-width, initial-scale=1.0'><style>body{font-family:sans-serif;background-color:#333;color:#fff;margin:15px;} button,input,select{padding:10px;margin:5px;border-radius:5px;border:none;cursor:pointer;} table{width:100%;border-collapse:collapse;} th,td{padding:8px;border:1px solid #555;text-align:left;}</style></head><body>")
     cl.send(f"<h1>Bell Controller</h1><p><strong>Time:</strong> {time_str}</p><p><strong>Next Bell:</strong> {next_bell_str}</p><hr><h2>Holiday Mode: {'ON' if holiday_mode else 'OFF'}</h2>")
     cl.send(f"<form action='/{'holidayoff' if holiday_mode else 'holidayon'}'><button style='background-color:{'green' if holiday_mode else 'red'};color:white;'>Turn {'OFF' if holiday_mode else 'ON'}</button></form>")
     
@@ -301,14 +369,14 @@ def send_status_page(cl):
 
     cl.send("<hr><h2>Controls</h2><form action='/force-update'><button>Force Update</button></form><form action='/test-relay1' style='display:inline-block;'><button>Test Relay 1</button></form><form action='/test-relay2' style='display:inline-block;'><button>Test Relay 2</button></form>")
     cl.send("<hr><h2>Software Update</h2><form action='/ota_update'><button style='background-color:#555;color:white;'>Check for Updates</button></form>")
-    cl.send("<hr><h2>Diagnostics</h2><p><a href='/diagnostics'>View Full Diagnostics</a></p></body></html>")
+    cl.send("<hr><h2>Diagnostics</h2><p><a href='/diagnostics'>View Full Diagnostics</a> | <a href='/log'>View Event Log</a></p></body></html>")
 
 def send_diagnostics_page(cl):
-    cl.send("HTTP/1.0 200 OK\r\nContent-type: text/html\r\n\r\n<!DOCTYPE html><html><head><title>Diagnostics</title><meta http-equiv='refresh' content='10' name='viewport' content='width=device-width, initial-scale=1.0'><style>body{font-family:sans-serif;background-color:#333;color:#fff;margin:15px;} table{width:100%;border-collapse:collapse;margin-bottom:20px;} th,td{padding:8px;border:1px solid #555;text-align:left;} h2{color:#00ffff;}</style></head><body><h1>Diagnostics</h1>")
+    cl.send("HTTP/1.0 200 OK\r\n\r\n<!DOCTYPE html><html><head><title>Diagnostics</title><meta http-equiv='refresh' content='10' name='viewport' content='width=device-width, initial-scale=1.0'><style>body{font-family:sans-serif;background-color:#333;color:#fff;margin:15px;} table{width:100%;border-collapse:collapse;margin-bottom:20px;} th,td{padding:8px;border:1px solid #555;text-align:left;} h2{color:#00ffff;}</style></head><body><h1>Diagnostics</h1>")
     gc.collect(); temp_c=(esp32.raw_temperature()-32.0)*5.0/9.0; wlan=network.WLAN(network.STA_IF); ip,subnet,gateway,dns=wlan.ifconfig() if wlan.isconnected() else ('N/A','N/A','N/A','N/A')
     cl.send(f"<h2>System</h2><table><tr><td>MicroPython</td><td>{sys.version}</td></tr><tr><td>Uptime</td><td>{get_uptime_str()}</td></tr><tr><td>CPU Freq</td><td>{machine.freq()/1000000}MHz</td></tr><tr><td>CPU Temp</td><td>{temp_c:.1f}&deg;C</td></tr><tr><td>Free Mem</td><td>{gc.mem_free()} bytes</td></tr></table>")
     cl.send(f"<h2>Network</h2><table><tr><td>IP</td><td>{ip}</td></tr><tr><td>Subnet</td><td>{subnet}</td></tr><tr><td>Gateway</td><td>{gateway}</td></tr><tr><td>DNS</td><td>{dns}</td></tr><tr><td>RSSI</td><td>{wifi_rssi}dBm</td></tr></table>")
-    cl.send(f"<h2>Application</h2><table><tr><td>Relay 1</td><td>{relay_status['1']}</td></tr><tr><td>Relay 2</td><td>{relay_status['2']}</td></tr><tr><td>Holiday Mode</td><td>{'ON' if holiday_mode else 'OFF'}</td></tr><tr><td>Last Sync</td><td>{last_sync_time_str}</td></tr><tr><td>Active Schedule</td><td>{active_schedule_name}</td></tr></table><p><a href='/'>&laquo; Back</a></p></body></html>")
+    cl.send(f"<h2>Application</h2><table><tr><td>Relay 1</td><td>{relay_status['1']}</td></tr><tr><td>Relay 2</td><td>{relay_status['2']}</td></tr><tr><td>Holiday Mode</td><td>{'ON' if holiday_mode else 'OFF'}</td></tr><tr><td>Last Sync</td><td>{last_sync_time_str}</td></tr><tr><td>Active Schedule</td><td>{active_schedule_name}</td></tr><tr><td>SD Card</td><td>{'Present' if sd_card_present else 'Not Detected'}</td></tr></table><p><a href='/'>&laquo; Back</a> | <a href='/log'>View Log</a></p></body></html>")
 
 def handle_web_request(cl, wdt):
     gc.collect()
@@ -352,6 +420,10 @@ def handle_web_request(cl, wdt):
             elif path == '/ota_update': perform_ota_update(cl, wdt); return
             elif path == '/': send_status_page(cl)
             elif path == '/diagnostics': send_diagnostics_page(cl)
+            elif path == '/log': send_log_page(cl)
+            elif path == '/schedule_status':
+                cl.send('HTTP/1.0 200 OK\r\nContent-type: application/json\r\n\r\n')
+                cl.send(ujson.dumps(schedule))
             elif path == '/holidaystatus': 
                 cl.send('HTTP/1.0 200 OK\r\nContent-type: application/json\r\n\r\n')
                 cl.send(ujson.dumps({"holiday_mode":holiday_mode}))
@@ -403,8 +475,7 @@ def run_setup_mode(wdt):
                 
                 save_wifi_credentials(ssid, password)
                 
-                cl.send('HTTP/1.0 200 OK\r\nContent-Type: text/html\r\n\r\n')
-                cl.send('<html><body><h1>Credentials Saved!</h1><p>The device will now reboot and connect to the new network.</p></body></html>')
+                cl.send('HTTP/1.0 200 OK\r\n\r\n<html><body><h1>Credentials Saved!</h1><p>The device will now reboot.</p></body></html>')
                 cl.close()
                 
                 display.fill(config.BLACK)
@@ -432,8 +503,7 @@ def run_setup_mode(wdt):
                 <input type="password" id="password" name="password"><br><br>
                 <input type="submit" value="Save and Reboot">
                 </form></body></html>"""
-                cl.send('HTTP/1.0 200 OK\r\nContent-Type: text/html\r\n\r\n')
-                cl.send(html)
+                cl.send('HTTP/1.0 200 OK\r\n\r\n' + html)
                 cl.close()
         except Exception as e:
             print(f"Setup web server error: {e}")
@@ -481,11 +551,13 @@ def handle_touch(wdt):
 # --- Main Execution ---
 wdt = WDT(timeout=8388)
 init_display()
+init_sd_card() # Initialize SD card early
 load_wifi_credentials()
 load_holiday_status()
 load_schedule_from_cache()
 load_active_schedule_name()
 
+log_event("Device startup sequence initiated.")
 if connect_wifi(wdt):
     if sync_time(wdt): fetch_manifest_and_schedule(wdt)
     update_display("Idle", config.GREEN)
@@ -539,4 +611,5 @@ while True:
     else: 
         if display_on: update_display("WiFi Connect Fail", config.RED)
     utime.sleep(0.1)
+
 
