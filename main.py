@@ -16,7 +16,7 @@ from machine import Pin, SPI, WDT, PWM, SDCard, reset
 import st7789
 import romand as font
 import xpt2046
-import ota_updater 
+import ota_updater
 import config
 
 # --- Global Variables ---
@@ -660,5 +660,4 @@ while True:
     else: 
         if display_on: update_display("WiFi Connect Fail", config.RED)
     utime.sleep(0.1)
-
 
