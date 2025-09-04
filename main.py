@@ -59,8 +59,7 @@ def set_led_color(color):
 def init_sd_card():
     global sd_card_present
     try:
-        sd_spi = SPI(config.SD_SPI_BUS, sck=Pin(config.SD_SCLK_PIN), mosi=Pin(config.SD_MOSI_PIN), miso=Pin(config.SD_MISO_PIN))
-        sd = SDCard(sd_spi, Pin(config.SD_CS_PIN))
+        sd = SDCard(slot=config.SD_SPI_BUS, sck=Pin(config.SD_SCLK_PIN), miso=Pin(config.SD_MISO_PIN), mosi=Pin(config.SD_MOSI_PIN), cs=Pin(config.SD_CS_PIN))
         os.mount(sd, '/sd')
         sd_card_present = True
         log_event("System boot: SD card detected.")
@@ -491,7 +490,8 @@ def send_diagnostics_page(cl):
 
 def send_login_page(cl, failed=False):
     cl.send("HTTP/1.0 200 OK\r\n\r\n<!DOCTYPE html><html><head><title>Login</title><meta name='viewport' content='width=device-width, initial-scale=1.0'><style>body{font-family:sans-serif;background-color:#333;color:#fff;display:flex;justify-content:center;align-items:center;height:100vh;} form{padding:20px;border:1px solid #555;border-radius:5px;}</style></head><body>")
-    cl.send(f"<form action='/login' method='post'><h2>Bell Controller Login</h2>{'<p style=\\'color:red;\\'>Login Failed</p>' if failed else ''}<label for='password'>Password:</label><br><input type='password' name='password'><br><br><input type='submit' value='Login'></form></body></html>")
+    failed_html = "<p style='color:red;'>Login Failed</p>" if failed else ""
+    cl.send(f"<form action='/login' method='post'><h2>Bell Controller Login</h2>{failed_html}<label for='password'>Password:</label><br><input type='password' name='password'><br><br><input type='submit' value='Login'></form></body></html>")
 
 def handle_web_request(cl, wdt):
     global current_session_id
@@ -832,4 +832,5 @@ while True:
         if display_on:
             update_display("WiFi Connect Fail", config.RED)
     utime.sleep(0.1)
+
 
